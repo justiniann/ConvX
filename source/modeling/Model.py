@@ -14,10 +14,12 @@ from sklearn.metrics import fbeta_score
 LAYERS_TO_FREEZE = 172
 
 
-def fbeta(y_true, y_pred, beta=2, threshold_shift=0):
+def f5_score(y_true, y_pred, threshold_shift=0):
     """Calculate fbeta score for Keras metrics.
     from https://www.kaggle.com/arsenyinfo/f-beta-score-for-keras
     """
+    beta = 5
+
     # just in case of hipster activation at the final layer
     y_pred = K.clip(y_pred, 0, 1)
 
@@ -52,7 +54,8 @@ def setup_to_transfer_learn(model, base_model):
     model.compile(
         optimizer='rmsprop',
         loss='categorical_crossentropy',
-        metrics=[fbeta]
+        metrics=['accuracy']
+        # metrics=[f5_score]
     )
     return model
 
@@ -65,7 +68,8 @@ def setup_to_finetune(model):
     model.compile(
         optimizer=optimizers.SGD(lr=0.0001, momentum=0.9),
         loss='categorical_crossentropy',
-        metrics=[fbeta]
+        metrics=['accuracy']
+        # metrics=[f5_score]
     )
     return model
 
@@ -87,22 +91,21 @@ def build_model_from_scratch(output_nodes):
     gap1 = GlobalAveragePooling2D()
     model.add(gap1)
     model.add(Dense(output_nodes, activation="softmax"))
+    model.compile(optimizer='rmsprop', loss='categorical_crossentropy', metrics=['accuracy'])
     return model
 
 
-def build_batch_generator(X, y, batch_size, number_of_batches):
+def build_batch_generator(X, y, batch_size):
     counter = 0
     number_of_batches = np.ceil(X.shape[0] / batch_size)
     while True:
         idx_start = batch_size * counter
         idx_end = batch_size * (counter + 1)
-        if idx_end > len(X):
-            idx_end = len(X)
         x_batch = vectorize_images(X[idx_start:idx_end]).astype('float32')/255
-        y_batch = np_utils.to_categorical(y[idx_start:idx_end], 2)
+        y_batch = y[idx_start:idx_end]
         counter += 1
         yield x_batch, y_batch
-        if counter == number_of_batches-1:
+        if counter == number_of_batches:
             counter = 0
 
 
@@ -114,8 +117,8 @@ def train_model(total_images=None, batch_size=32, epochs=5):
     steps_per_epoch_fit = np.ceil(len(train_X) / batch_size)
     steps_per_epoch_val = np.ceil(len(validation_X) / batch_size)
 
-    training_generator = build_batch_generator(train_X, train_y, batch_size, steps_per_epoch_fit)
-    validation_generator = build_batch_generator(validation_X, validation_y, batch_size, steps_per_epoch_val)
+    training_generator = build_batch_generator(train_X, train_y, batch_size)
+    validation_generator = build_batch_generator(validation_X, validation_y, batch_size)
 
     print("Done. Total time: {} sec".format(time.time() - start_time))
 
@@ -126,11 +129,12 @@ def train_model(total_images=None, batch_size=32, epochs=5):
         verbose=0,
         save_best_only=True
     )
-    base_model = applications.InceptionV3(weights='imagenet', include_top=False)
-    model = add_new_last_layer(base_model, 2)
+    # base_model = applications.InceptionV3(weights='imagenet', include_top=False)
+    # # transfer learning
+    # model = add_new_last_layer(base_model, 2)
+    # model = setup_to_transfer_learn(model, base_model)
 
-    # transfer learning
-    model = setup_to_transfer_learn(model, base_model)
+    model = build_model_from_scratch(2)
 
     model.fit_generator(
         generator=training_generator,
@@ -143,31 +147,41 @@ def train_model(total_images=None, batch_size=32, epochs=5):
     )
 
     # fine-tuning
-    model = setup_to_finetune(model)
+    # model = setup_to_finetune(model)
 
-    model.fit_generator(
-        generator=training_generator,
-        steps_per_epoch=steps_per_epoch_fit,
-        validation_data=validation_generator,
-        validation_steps=steps_per_epoch_val,
-        epochs=epochs,
-        verbose=1,
-        callbacks=[checkpointer]
-    )
+    # model.fit_generator(
+    #     generator=training_generator,
+    #     steps_per_epoch=steps_per_epoch_fit,
+    #     validation_data=validation_generator,
+    #     validation_steps=steps_per_epoch_val,
+    #     epochs=epochs,
+    #     verbose=1,
+    #     callbacks=[checkpointer]
+    # )
 
     model.load_weights('..{0}..{0}saved_models{0}resnet50_best.hdf5'.format(os.path.sep))
     print("Done. Total time: {} sec".format(time.time() - start_time))
 
     # get index of predicted dog breed for each image in test set
-    model_predictions = [np.argmax(model.predict(
-        np.expand_dims(vectorize_img(img), axis=0))
-    ) for img in test_X]
+    model_predictions = [model.predict(vectorize_images(test_X))]
+    # for img in test_X:
+    #     raw_prediction = model.predict(vectorize_img("{}{}".format(IMG_PATH, img)))
+    #     prediction = np.argmax(raw_prediction)
+    #     print(raw_prediction)
+    #     print(prediction)
+    #     model_predictions.append(prediction)
 
     # report test accuracy
-    test_accuracy = 100 * np.sum(np.array(model_predictions) == np.argmax(test_y, axis=1)) / len(test_y)
-    print('Test accuracy: %.4f%%' % test_accuracy)
+    print(model_predictions)
+    # print(test_y)
+    correct_predictions = 0
+    for i in range(0, len(test_y)):
+        if test_y[i] == model_predictions.index(i):
+            correct_predictions += 1
+    test_accuracy = correct_predictions / len(test_y)
+    print("Test accuracy: {}".format(test_accuracy))
     print("Training Done!")
 
 
 if __name__ == '__main__':
-    train_model(epochs=5, total_images=100)
+    train_model(epochs=20, total_images=100)

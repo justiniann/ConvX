@@ -73,7 +73,7 @@ def split_that_shit(size=None, test_percentage=0.2, validation_percentage=0.1):
     y = dataset.iloc[:, 1].values
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_percentage)
     X_train, X_validation, y_train, y_validation = train_test_split(X_train, y_train, test_size=validation_percentage)
-    return X_train.flatten(), y_train, X_validation.flatten(), y_validation, X_test.flatten(), y_test
+    return X_train.flatten(), format_dependent(y_train), X_validation.flatten(), format_dependent(y_validation), X_test.flatten(), format_dependent(y_test)
 
 
 def format_dependent(y, categories=2):
