@@ -1,24 +1,42 @@
-from preprocessing.Dataset import *
-import os
-from keras.layers import Conv2D, MaxPooling2D, GlobalAveragePooling2D
+import time
+from keras import applications
+from keras import backend as K
+from keras import optimizers
+from keras.callbacks import ModelCheckpoint
 from keras.layers import Dropout, Flatten, Dense
 from keras.models import Sequential, Model
-from keras.callbacks import EarlyStopping, ModelCheckpoint, LearningRateScheduler, TensorBoard
-from keras import applications
-from keras import optimizers
-import time
-from keras import backend as K
-from sklearn.metrics import fbeta_score
+from keras.preprocessing.image import ImageDataGenerator
+
+from preprocessing.Dataset import *
+
+RES_PATH = "..{0}..{0}resources{0}".format(os.path.sep)
+IMG_PATH = "..{0}..{0}images{0}".format(os.path.sep)
+BOTTLENECK_PATH = "..{0}..{0}bottleneck{0}".format(os.path.sep)
+SAVE_PATH = "..{0}..{0}saved_models{0}".format(os.path.sep)
+
+TRAIN_PATH = "{}{}{}".format(IMG_PATH, "train", os.path.sep)
+VAL_PATH = "{}{}{}".format(IMG_PATH, "validation", os.path.sep)
 
 
-LAYERS_TO_FREEZE = 172
+def build_dir_path(path):
+    if not os.path.exists(path):  # ensure the directory is there, create it if you have to
+        os.makedirs(path)
+
+
+def count_files(root_dir):
+    return sum([len(files) for r, d, files in os.walk(root_dir)])
+
+
+def get_iterations_per_epoch(total_images, batch_size):
+    return np.ceil(total_images / batch_size)
 
 
 def f5_score(y_true, y_pred, threshold_shift=0):
-    """Calculate fbeta score for Keras metrics.
+    """
+    Calculate fbeta score for Keras metrics.
     from https://www.kaggle.com/arsenyinfo/f-beta-score-for-keras
     """
-    beta = 5
+    beta = 3
 
     # just in case of hipster activation at the final layer
     y_pred = K.clip(y_pred, 0, 1)
@@ -39,149 +57,199 @@ def f5_score(y_true, y_pred, threshold_shift=0):
     return fbeta
 
 
-def add_new_last_layer(base_model, nb_classes):
-    x = base_model.output
-    x = GlobalAveragePooling2D()(x)
-    x = Dense(1024, activation='relu')(x)
-    predictions = Dense(nb_classes, activation='softmax')(x)
-    model = Model(input=base_model.input, output=predictions)
-    return model
+def save_model(model_name, model, save_path):
+    # serialize model to JSON
+    model_json = model.to_json()
+    build_dir_path(save_path)
+    with open(os.path.join(save_path, "{}.json".format(model_name)), "w") as json_file:
+        json_file.write(model_json)
+    # serialize weights to HDF5
+    model.save_weights(os.path.join(save_path, "{}_weights.h5".format(model_name)))
+    print("Saved model to disk")
 
 
-def setup_to_transfer_learn(model, base_model):
-    for layer in base_model.layers:
-        layer.trainable = False
-    model.compile(
-        optimizer='rmsprop',
-        loss='categorical_crossentropy',
-        metrics=['accuracy']
-        # metrics=[f5_score]
+def build_fully_connected_top_layer(connecting_shape):
+    top_layers = Sequential()
+    top_layers.add(Flatten(input_shape=connecting_shape))
+    top_layers.add(Dense(256, activation='relu'))
+    top_layers.add(Dropout(0.2))
+    top_layers.add(Dense(1, activation='sigmoid'))
+    return top_layers
+
+
+def save_bottleneck_features(model, train_path, validation_path, step_counts, bottleneck_file_path,
+                             batch_size=32, target_image_size=(250, 250)):
+    train_bottleneck_file = os.path.join(bottleneck_file_path, "train.npy")
+    validation_bottleneck_file = os.path.join(bottleneck_file_path, "validation.npy")
+
+    data_generator = ImageDataGenerator(rescale=1. / 255)
+
+    train_generator = data_generator.flow_from_directory(
+        train_path,
+        target_size=target_image_size,
+        batch_size=batch_size,
+        class_mode=None,
+        shuffle=False
     )
-    return model
+    bottleneck_features_train = model.predict_generator(train_generator, step_counts[0])
+    build_dir_path(bottleneck_file_path)
+    np.save(open(train_bottleneck_file, 'wb'), bottleneck_features_train)
 
-
-def setup_to_finetune(model):
-    for layer in model.layers[:LAYERS_TO_FREEZE]:
-        layer.trainable = False
-    for layer in model.layers[LAYERS_TO_FREEZE:]:
-        layer.trainable = True
-    model.compile(
-        optimizer=optimizers.SGD(lr=0.0001, momentum=0.9),
-        loss='categorical_crossentropy',
-        metrics=['accuracy']
-        # metrics=[f5_score]
+    validation_path_generator = data_generator.flow_from_directory(
+        validation_path,
+        target_size=target_image_size,
+        batch_size=batch_size,
+        class_mode=None,
+        shuffle=False
     )
-    return model
+    bottleneck_features_validation = model.predict_generator(validation_path_generator, step_counts[1])
+    np.save(open(validation_bottleneck_file, 'wb'), bottleneck_features_validation)
 
 
-def build_model_from_scratch(output_nodes):
-    model = Sequential()
-    conv1 = Conv2D(filters=16, kernel_size=2, strides=2, padding='same', activation='relu', input_shape=(224, 224, 3))
-    model.add(conv1)
-    pool1 = MaxPooling2D((2, 2), padding='same')
-    model.add(pool1)
-    conv2 = Conv2D(filters=32, kernel_size=4, strides=2, padding='same', activation='relu')
-    model.add(conv2)
-    pool2 = MaxPooling2D((2, 2), padding='same')
-    model.add(pool2)
-    conv3 = Conv2D(filters=64, kernel_size=2, strides=2, padding='same', activation='relu')
-    model.add(conv3)
-    pool3 = MaxPooling2D((2, 2), padding='same')
-    model.add(pool3)
-    gap1 = GlobalAveragePooling2D()
-    model.add(gap1)
-    model.add(Dense(output_nodes, activation="softmax"))
-    model.compile(optimizer='rmsprop', loss='categorical_crossentropy', metrics=['accuracy'])
-    return model
+def do_transfer_learning(path_to_bottleneck_features, healthy_train_images, unhealthy_train_images,
+                         healthy_validation_images, unhealthy_validation_images, epochs=20, batch_size=32):
+    # load training data
+    train_data = np.load(open(os.path.join(path_to_bottleneck_features, "train.npy"), 'rb'))
+    train_labels = np.array([0] * healthy_train_images + [1] * unhealthy_train_images)
+
+    # load validation data
+    validation_data = np.load(open(os.path.join(path_to_bottleneck_features, "validation.npy"), 'rb'))
+    validation_labels = np.array([0] * healthy_validation_images + [1] * unhealthy_validation_images)
+
+    top_layer = build_fully_connected_top_layer(train_data.shape[1:])
+
+    top_layer.compile(optimizer='rmsprop',
+                      loss='binary_crossentropy',
+                      metrics=['accuracy'])
+
+    top_layer.fit(train_data, train_labels,
+                  epochs=epochs,
+                  batch_size=batch_size,
+                  validation_data=(validation_data, validation_labels))
+    return top_layer
 
 
-def build_batch_generator(X, y, batch_size):
-    counter = 0
-    number_of_batches = np.ceil(X.shape[0] / batch_size)
-    while True:
-        idx_start = batch_size * counter
-        idx_end = batch_size * (counter + 1)
-        x_batch = vectorize_images(X[idx_start:idx_end]).astype('float32')/255
-        y_batch = y[idx_start:idx_end]
-        counter += 1
-        yield x_batch, y_batch
-        if counter == number_of_batches:
-            counter = 0
+def do_fine_tune_learning(base_model, top_layer, model_weights_save_file, num_training_steps,num_validation_steps,
+                          layers_to_train, epochs=20, batch_size=32, target_image_size=(250, 250)):
+    model_for_finetune = Model(inputs=base_model.input, outputs=top_layer(base_model.output))
 
+    for layer in model_for_finetune.layers[:len(model_for_finetune.layers) - layers_to_train]:
+        layer.trainable = False
 
-def train_model(total_images=None, batch_size=32, epochs=5):
-    print("Starting image vectorization process...")
-    start_time = time.time()
-    train_X, train_y, validation_X, validation_y, test_X, test_y = split_that_shit(size=total_images)
+    model_for_finetune.compile(loss='binary_crossentropy',
+                               optimizer=optimizers.SGD(lr=1e-4, momentum=0.9),
+                               metrics=['accuracy'])
 
-    steps_per_epoch_fit = np.ceil(len(train_X) / batch_size)
-    steps_per_epoch_val = np.ceil(len(validation_X) / batch_size)
-
-    training_generator = build_batch_generator(train_X, train_y, batch_size)
-    validation_generator = build_batch_generator(validation_X, validation_y, batch_size)
-
-    print("Done. Total time: {} sec".format(time.time() - start_time))
-
-    print("Beginning fitting network...")
-    start_time = time.time()
     checkpointer = ModelCheckpoint(
-        filepath='..{0}..{0}saved_models{0}resnet50_best.hdf5'.format(os.path.sep),
-        verbose=0,
+        model_weights_save_file,
+        monitor='val_loss',
         save_best_only=True
     )
-    # base_model = applications.InceptionV3(weights='imagenet', include_top=False)
-    # # transfer learning
-    # model = add_new_last_layer(base_model, 2)
-    # model = setup_to_transfer_learn(model, base_model)
 
-    model = build_model_from_scratch(2)
+    train_datagen = ImageDataGenerator(
+        rescale=1. / 255,
+        shear_range=0.2,
+        zoom_range=0.2,
+        horizontal_flip=True)
 
-    model.fit_generator(
-        generator=training_generator,
-        steps_per_epoch=steps_per_epoch_fit,
-        validation_data=validation_generator,
-        validation_steps=steps_per_epoch_val,
+    test_datagen = ImageDataGenerator(rescale=1. / 255)
+
+    train_generator = train_datagen.flow_from_directory(
+        train_path,
+        target_size=target_image_size,
+        batch_size=batch_size,
+        class_mode='binary')
+
+    validation_generator = test_datagen.flow_from_directory(
+        validation_path,
+        target_size=target_image_size,
+        batch_size=batch_size,
+        class_mode='binary')
+
+    # fine-tune the model
+    model_for_finetune.fit_generator(
+        train_generator,
+        steps_per_epoch=num_training_steps,
         epochs=epochs,
-        verbose=1,
-        callbacks=[checkpointer]
+        validation_data=validation_generator,
+        validation_steps=num_validation_steps,
+        callbacks=[checkpointer],
+        verbose=1
     )
+    return model_for_finetune
 
-    # fine-tuning
-    # model = setup_to_finetune(model)
 
-    # model.fit_generator(
-    #     generator=training_generator,
-    #     steps_per_epoch=steps_per_epoch_fit,
-    #     validation_data=validation_generator,
-    #     validation_steps=steps_per_epoch_val,
-    #     epochs=epochs,
-    #     verbose=1,
-    #     callbacks=[checkpointer]
-    # )
+def build_dat_model(model_name, base_model, epochs=20, batch_size=32, target_image_size=(250, 250),
+                    get_bottleneck_features=False, transfer_learn=True, save=True):
+    path_to_bottleneck_features = os.path.join(BOTTLENECK_PATH, model_name)
+    path_to_saved_data = os.path.join(SAVE_PATH, model_name)
 
-    model.load_weights('..{0}..{0}saved_models{0}resnet50_best.hdf5'.format(os.path.sep))
-    print("Done. Total time: {} sec".format(time.time() - start_time))
+    healthy_train_images = count_files(os.path.join(train_path, "healthy"))
+    unhealthy_train_images = count_files(os.path.join(train_path, "unhealthy"))
+    healthy_validation_images = count_files(os.path.join(validation_path, "healthy"))
+    unhealthy_validation_images = count_files(os.path.join(validation_path, "unhealthy"))
 
-    # get index of predicted dog breed for each image in test set
-    model_predictions = [model.predict(vectorize_images(test_X))]
-    # for img in test_X:
-    #     raw_prediction = model.predict(vectorize_img("{}{}".format(IMG_PATH, img)))
-    #     prediction = np.argmax(raw_prediction)
-    #     print(raw_prediction)
-    #     print(prediction)
-    #     model_predictions.append(prediction)
+    num_training_steps = get_iterations_per_epoch((healthy_train_images + unhealthy_train_images), batch_size)
+    num_validation_steps = get_iterations_per_epoch((healthy_validation_images + unhealthy_validation_images),
+                                                    batch_size)
 
-    # report test accuracy
-    print(model_predictions)
-    # print(test_y)
-    correct_predictions = 0
-    for i in range(0, len(test_y)):
-        if test_y[i] == model_predictions.index(i):
-            correct_predictions += 1
-    test_accuracy = correct_predictions / len(test_y)
-    print("Test accuracy: {}".format(test_accuracy))
-    print("Training Done!")
+    # ***BOTTLENECK FEATURE EXTRACTION*********************************************************************************
+    if get_bottleneck_features or os.path.exists(path_to_bottleneck_features) is False:
+        print("Creating bottleneck features. This could take a while...")
+        save_bottleneck_features(base_model,
+                                 TRAIN_PATH,
+                                 VAL_PATH,
+                                 (num_training_steps, num_validation_steps),
+                                 path_to_bottleneck_features,
+                                 target_image_size=target_image_size)
+        print("Bottleneck features saved!")
+    else:
+        print("Using bottleneck features from previously trained model")
+
+    # ***TRANSFER LEARNING*********************************************************************************************
+    print("Transfer learning...")
+    top_model_weights_path = os.path.join(path_to_saved_data, "transfer_learning_weights.h5")
+    if transfer_learn or os.path.exists(top_model_weights_path) is False:
+        # Using the bottleneck features, train a fully connected classification layer (this will be the top layer)
+        top_layer_for_transfer_learning = do_transfer_learning(path_to_bottleneck_features,
+                                                               healthy_train_images,
+                                                               unhealthy_train_images,
+                                                               healthy_validation_images,
+                                                               unhealthy_validation_images,
+                                                               epochs=epochs,
+                                                               batch_size=batch_size)
+
+        # save the weights from the 'bottleneck model'
+        build_dir_path(path_to_saved_data)
+        top_layer_for_transfer_learning.save_weights(top_model_weights_path)
+        print("Transfer learning complete!")
+    else:
+        print("Using top layer weights from previously trained model")
+
+    # ***FINETUNE LEARNING*********************************************************************************************
+    print("Beginning Fine-Tune learning...")
+    top_layer = build_fully_connected_top_layer(base_model.output_shape[1:])
+    top_layer.load_weights(top_model_weights_path)
+    final_model = do_fine_tune_learning(
+        base_model,
+        top_layer,
+        path_to_saved_data,
+        num_training_steps,
+        num_validation_steps,
+        layers_to_train=2,
+        epochs=epochs,
+        batch_size=batch_size,
+        target_image_size=target_image_size)
+    print("Fine tune learning complete!")
+    if save:
+        save_model(model_name, final_model, path_to_saved_data)
+    return final_model
 
 
 if __name__ == '__main__':
-    train_model(epochs=20, total_images=100)
+    start_time = time.time()
+    model = build_dat_model("VGG16",
+                            applications.VGG16(include_top=False, weights='imagenet', input_shape=(250, 250, 3)),
+                            epochs=1,
+                            save=True)
+    print("Training complete, total runtime was {} sec".format(time.time()-start_time))

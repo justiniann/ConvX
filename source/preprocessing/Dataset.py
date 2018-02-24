@@ -12,18 +12,33 @@ from multiprocessing.dummy import Pool as ThreadPool
 
 RES_PATH = "..{0}..{0}resources{0}".format(os.path.sep)
 IMG_PATH = "..{0}..{0}images{0}".format(os.path.sep)
+train_path = "{}{}{}".format(IMG_PATH, "train", os.path.sep)
+validation_path = "{}{}{}".format(IMG_PATH, "validation", os.path.sep)
+test_path = "{}{}{}".format(IMG_PATH, "test", os.path.sep)
 
 
 def move_images():
-    with open("{}{}".format(RES_PATH, "test_list.txt"), 'r') as f:
-        for file_name in f:
-            file_name = file_name[:-1]
-            os.rename("{}{}".format(IMG_PATH, file_name), "{}{}{}{}".format(IMG_PATH, "test", os.path.sep, file_name))
+    train_X, train_y, validation_X, validation_y, test_X, test_y = split_that_shit()
+    # train
+    for i in range(0, len(train_X)):
+        file_name = train_X[i]
+        classification_directory = "healthy" if np.argmax(train_y[i]) == 0 else "unhealthy"
+        os.rename("{}{}".format(IMG_PATH, file_name), "{}{}{}{}"
+                  .format(train_path, classification_directory, os.path.sep, file_name))
 
-    with open("{}{}".format(RES_PATH, "train_val_list.txt"), 'r') as f:
-        for file_name in f:
-            file_name = file_name.replace('\n', '')
-            os.rename("{}{}".format(IMG_PATH, file_name), "{}{}{}{}".format(IMG_PATH, "train", os.path.sep, file_name))
+    # validation
+    for i in range(0, len(validation_X)):
+        file_name = validation_X[i]
+        classification_directory = "healthy" if np.argmax(validation_y[i]) == 0 else "unhealthy"
+        os.rename("{}{}".format(IMG_PATH, file_name), "{}{}{}{}"
+                  .format(validation_path, classification_directory, os.path.sep, file_name))
+
+    # test
+    for i in range(0, len(test_X)):
+        file_name = test_X[i]
+        classification_directory = "healthy" if np.argmax(test_y[i]) == 0 else "unhealthy"
+        os.rename("{}{}".format(IMG_PATH, file_name), "{}{}{}{}"
+                  .format(test_path, classification_directory, os.path.sep, file_name))
 
 
 def chunk_list(images, chuncks):
@@ -91,4 +106,4 @@ def ouptut_distribution():
 
 
 if __name__ == '__main__':
-    preprocess()
+    move_images()
