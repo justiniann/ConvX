@@ -1,4 +1,6 @@
 import time
+import os
+import numpy as np
 from keras import applications
 from keras import backend as K
 from keras import optimizers
@@ -7,15 +9,14 @@ from keras.layers import Dropout, Flatten, Dense
 from keras.models import Sequential, Model
 from keras.preprocessing.image import ImageDataGenerator
 
-from preprocessing.Dataset import *
-
 RES_PATH = "..{0}..{0}resources{0}".format(os.path.sep)
 IMG_PATH = "..{0}..{0}images{0}".format(os.path.sep)
 BOTTLENECK_PATH = "..{0}..{0}bottleneck{0}".format(os.path.sep)
 SAVE_PATH = "..{0}..{0}saved_models{0}".format(os.path.sep)
 
-TRAIN_PATH = "{}{}{}".format(IMG_PATH, "train", os.path.sep)
-VAL_PATH = "{}{}{}".format(IMG_PATH, "validation", os.path.sep)
+TRAIN_PATH = os.path.join(IMG_PATH, "train")
+VAL_PATH = os.path.join(IMG_PATH, "validation")
+TEST_PATH = os.path.join(IMG_PATH, "test")
 
 
 def build_dir_path(path):
@@ -72,7 +73,7 @@ def build_fully_connected_top_layer(connecting_shape):
     top_layers = Sequential()
     top_layers.add(Flatten(input_shape=connecting_shape))
     top_layers.add(Dense(256, activation='relu'))
-    top_layers.add(Dropout(0.2))
+    top_layers.add(Dropout(0.5))
     top_layers.add(Dense(1, activation='sigmoid'))
     return top_layers
 
@@ -129,7 +130,7 @@ def do_transfer_learning(path_to_bottleneck_features, healthy_train_images, unhe
     return top_layer
 
 
-def do_fine_tune_learning(base_model, top_layer, model_weights_save_file, num_training_steps,num_validation_steps,
+def do_fine_tune_learning(base_model, top_layer, model_weights_save_file, num_training_steps, num_validation_steps,
                           layers_to_train, epochs=20, batch_size=32, target_image_size=(250, 250)):
     model_for_finetune = Model(inputs=base_model.input, outputs=top_layer(base_model.output))
 
@@ -155,13 +156,13 @@ def do_fine_tune_learning(base_model, top_layer, model_weights_save_file, num_tr
     test_datagen = ImageDataGenerator(rescale=1. / 255)
 
     train_generator = train_datagen.flow_from_directory(
-        train_path,
+        TRAIN_PATH,
         target_size=target_image_size,
         batch_size=batch_size,
         class_mode='binary')
 
     validation_generator = test_datagen.flow_from_directory(
-        validation_path,
+        VAL_PATH,
         target_size=target_image_size,
         batch_size=batch_size,
         class_mode='binary')
@@ -184,10 +185,10 @@ def build_dat_model(model_name, base_model, epochs=20, batch_size=32, target_ima
     path_to_bottleneck_features = os.path.join(BOTTLENECK_PATH, model_name)
     path_to_saved_data = os.path.join(SAVE_PATH, model_name)
 
-    healthy_train_images = count_files(os.path.join(train_path, "healthy"))
-    unhealthy_train_images = count_files(os.path.join(train_path, "unhealthy"))
-    healthy_validation_images = count_files(os.path.join(validation_path, "healthy"))
-    unhealthy_validation_images = count_files(os.path.join(validation_path, "unhealthy"))
+    healthy_train_images = count_files(os.path.join(TRAIN_PATH, "healthy"))
+    unhealthy_train_images = count_files(os.path.join(TRAIN_PATH, "unhealthy"))
+    healthy_validation_images = count_files(os.path.join(VAL_PATH, "healthy"))
+    unhealthy_validation_images = count_files(os.path.join(VAL_PATH, "unhealthy"))
 
     num_training_steps = get_iterations_per_epoch((healthy_train_images + unhealthy_train_images), batch_size)
     num_validation_steps = get_iterations_per_epoch((healthy_validation_images + unhealthy_validation_images),
@@ -208,6 +209,7 @@ def build_dat_model(model_name, base_model, epochs=20, batch_size=32, target_ima
 
     # ***TRANSFER LEARNING*********************************************************************************************
     print("Transfer learning...")
+    build_dir_path(path_to_saved_data)
     top_model_weights_path = os.path.join(path_to_saved_data, "transfer_learning_weights.h5")
     if transfer_learn or os.path.exists(top_model_weights_path) is False:
         # Using the bottleneck features, train a fully connected classification layer (this will be the top layer)
@@ -220,7 +222,6 @@ def build_dat_model(model_name, base_model, epochs=20, batch_size=32, target_ima
                                                                batch_size=batch_size)
 
         # save the weights from the 'bottleneck model'
-        build_dir_path(path_to_saved_data)
         top_layer_for_transfer_learning.save_weights(top_model_weights_path)
         print("Transfer learning complete!")
     else:
@@ -246,10 +247,31 @@ def build_dat_model(model_name, base_model, epochs=20, batch_size=32, target_ima
     return final_model
 
 
+def evaluate_model(model, batch_size=32, target_image_size=(250, 250)):
+    healthy_test_images = count_files(os.path.join(TEST_PATH, "healthy"))
+    unhealthy_test_images = count_files(os.path.join(TEST_PATH, "unhealthy"))
+
+    test_iteration_count = get_iterations_per_epoch((healthy_test_images + unhealthy_test_images), batch_size)
+
+    test_datagen = ImageDataGenerator(rescale=1. / 255)
+
+    test_generator = test_datagen.flow_from_directory(
+        TEST_PATH,
+        target_size=target_image_size,
+        batch_size=batch_size,
+        class_mode='binary',
+        shuffle=False
+    )
+
+    eval_generator = model.evaluate_generator(test_generator, test_iteration_count)
+    print(eval_generator[1])
+
+
 if __name__ == '__main__':
     start_time = time.time()
     model = build_dat_model("VGG16",
                             applications.VGG16(include_top=False, weights='imagenet', input_shape=(250, 250, 3)),
                             epochs=1,
                             save=True)
-    print("Training complete, total runtime was {} sec".format(time.time()-start_time))
+    evaluate_model(model)
+    print("Training complete, total runtime was {} sec".format(time.time() - start_time))
