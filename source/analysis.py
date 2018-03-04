@@ -1,13 +1,11 @@
-import time
-import os
-import numpy as np
 from keras import applications
 from keras import backend as K
 from keras import optimizers
-from keras.callbacks import ModelCheckpoint
 from keras.layers import Dropout, Flatten, Dense
 from keras.models import Sequential, Model
 from keras.preprocessing.image import ImageDataGenerator
+
+from convx_utils import *
 
 RES_PATH = "..{0}..{0}resources{0}".format(os.path.sep)
 IMG_PATH = "..{0}..{0}images{0}".format(os.path.sep)
@@ -19,20 +17,7 @@ VAL_PATH = os.path.join(IMG_PATH, "validation")
 TEST_PATH = os.path.join(IMG_PATH, "test")
 
 
-def build_dir_path(path):
-    if not os.path.exists(path):  # ensure the directory is there, create it if you have to
-        os.makedirs(path)
-
-
-def count_files(root_dir):
-    return sum([len(files) for r, d, files in os.walk(root_dir)])
-
-
-def get_iterations_per_epoch(total_images, batch_size):
-    return np.ceil(total_images / batch_size)
-
-
-def f5_score(y_true, y_pred, threshold_shift=0):
+def f3_score(y_true, y_pred, threshold_shift=0):
     """
     Calculate fbeta score for Keras metrics.
     from https://www.kaggle.com/arsenyinfo/f-beta-score-for-keras
@@ -56,17 +41,6 @@ def f5_score(y_true, y_pred, threshold_shift=0):
     fbeta = ((beta_squared + 1) * (precision * recall) /
              (beta_squared * precision + recall + K.epsilon()))
     return fbeta
-
-
-def save_model(model_name, model, save_path):
-    # serialize model to JSON
-    model_json = model.to_json()
-    build_dir_path(save_path)
-    with open(os.path.join(save_path, "{}.json".format(model_name)), "w") as json_file:
-        json_file.write(model_json)
-    # serialize weights to HDF5
-    model.save_weights(os.path.join(save_path, "{}_weights.h5".format(model_name)))
-    print("Saved model to disk")
 
 
 def build_fully_connected_top_layer(connecting_shape):
@@ -119,14 +93,15 @@ def do_transfer_learning(path_to_bottleneck_features, healthy_train_images, unhe
 
     top_layer = build_fully_connected_top_layer(train_data.shape[1:])
 
-    top_layer.compile(optimizer='rmsprop',
-                      loss='binary_crossentropy',
+    top_layer.compile(loss='binary_crossentropy',
+                      optimizer=optimizers.SGD(momentum=0.95),
                       metrics=['accuracy'])
 
     top_layer.fit(train_data, train_labels,
                   epochs=epochs,
                   batch_size=batch_size,
-                  validation_data=(validation_data, validation_labels))
+                  validation_data=(validation_data, validation_labels),
+                  verbose=1)
     return top_layer
 
 
@@ -138,7 +113,7 @@ def do_fine_tune_learning(base_model, top_layer, model_weights_save_file, num_tr
         layer.trainable = False
 
     model_for_finetune.compile(loss='binary_crossentropy',
-                               optimizer=optimizers.SGD(lr=1e-4, momentum=0.9),
+                               optimizer=optimizers.SGD(momentum=0.95),
                                metrics=['accuracy'])
 
     checkpointer = ModelCheckpoint(
@@ -180,8 +155,8 @@ def do_fine_tune_learning(base_model, top_layer, model_weights_save_file, num_tr
     return model_for_finetune
 
 
-def build_dat_model(model_name, base_model, epochs=20, batch_size=32, target_image_size=(250, 250),
-                    get_bottleneck_features=False, transfer_learn=True, save=True):
+def build_dat_model(model_name, base_model, batch_size=32, target_image_size=(250, 250), transfer_epochs=10,
+                    fine_tune_epochs=1, save=True):
     path_to_bottleneck_features = os.path.join(BOTTLENECK_PATH, model_name)
     path_to_saved_data = os.path.join(SAVE_PATH, model_name)
 
@@ -195,7 +170,7 @@ def build_dat_model(model_name, base_model, epochs=20, batch_size=32, target_ima
                                                     batch_size)
 
     # ***BOTTLENECK FEATURE EXTRACTION*********************************************************************************
-    if get_bottleneck_features or os.path.exists(path_to_bottleneck_features) is False:
+    if os.path.exists(path_to_bottleneck_features) is False:
         print("Creating bottleneck features. This could take a while...")
         save_bottleneck_features(base_model,
                                  TRAIN_PATH,
@@ -204,41 +179,37 @@ def build_dat_model(model_name, base_model, epochs=20, batch_size=32, target_ima
                                  path_to_bottleneck_features,
                                  target_image_size=target_image_size)
         print("Bottleneck features saved!")
-    else:
-        print("Using bottleneck features from previously trained model")
 
     # ***TRANSFER LEARNING*********************************************************************************************
     print("Transfer learning...")
     build_dir_path(path_to_saved_data)
     top_model_weights_path = os.path.join(path_to_saved_data, "transfer_learning_weights.h5")
-    if transfer_learn or os.path.exists(top_model_weights_path) is False:
-        # Using the bottleneck features, train a fully connected classification layer (this will be the top layer)
-        top_layer_for_transfer_learning = do_transfer_learning(path_to_bottleneck_features,
-                                                               healthy_train_images,
-                                                               unhealthy_train_images,
-                                                               healthy_validation_images,
-                                                               unhealthy_validation_images,
-                                                               epochs=epochs,
-                                                               batch_size=batch_size)
+    # Using the bottleneck features, train a fully connected classification layer (this will be the top layer)
+    top_layer_for_transfer_learning = do_transfer_learning(path_to_bottleneck_features,
+                                                           healthy_train_images,
+                                                           unhealthy_train_images,
+                                                           healthy_validation_images,
+                                                           unhealthy_validation_images,
+                                                           epochs=transfer_epochs,
+                                                           batch_size=batch_size)
 
-        # save the weights from the 'bottleneck model'
-        top_layer_for_transfer_learning.save_weights(top_model_weights_path)
-        print("Transfer learning complete!")
-    else:
-        print("Using top layer weights from previously trained model")
+    # save the weights from the 'bottleneck model'
+    top_layer_for_transfer_learning.save_weights(top_model_weights_path)
+    print("Transfer learning complete!")
 
     # ***FINETUNE LEARNING*********************************************************************************************
-    print("Beginning Fine-Tune learning...")
+    # print("Beginning Fine-Tune learning...")
+    model_save_file = os.path.join(path_to_saved_data, "checkpointer_weights.hdf5".format(model_name))
     top_layer = build_fully_connected_top_layer(base_model.output_shape[1:])
     top_layer.load_weights(top_model_weights_path)
     final_model = do_fine_tune_learning(
         base_model,
         top_layer,
-        path_to_saved_data,
+        model_save_file,
         num_training_steps,
         num_validation_steps,
-        layers_to_train=2,
-        epochs=epochs,
+        layers_to_train=10,
+        epochs=fine_tune_epochs,
         batch_size=batch_size,
         target_image_size=target_image_size)
     print("Fine tune learning complete!")
@@ -264,14 +235,27 @@ def evaluate_model(model, batch_size=32, target_image_size=(250, 250)):
     )
 
     eval_generator = model.evaluate_generator(test_generator, test_iteration_count)
-    print(eval_generator[1])
+    print("Accuracy: {}%".format(eval_generator[1]))
+
+
+def evaluate_available_base_models():
+    input_shape = (250, 250, 3)
+    batch_size = 32
+    transfer_epochs = 50
+    fine_tune_epochs = 2
+    base_models = {
+        # "VGG16": applications.VGG16(include_top=False, weights='imagenet', input_shape=input_shape),
+        # "VGG19": applications.VGG19(include_top=False, weights='imagenet', input_shape=input_shape),
+        # "Resnet50": applications.ResNet50(include_top=False, weights='imagenet', input_shape=input_shape),
+        # "Xception": applications.Xception(include_top=False, weights='imagenet', input_shape=input_shape),
+        "InceptionV3": applications.InceptionV3(include_top=False, weights='imagenet', input_shape=input_shape),
+    }
+    for model_name in base_models.keys():
+        print("Now evaluating {} model".format(model_name))
+        model = build_dat_model(model_name, base_models[model_name], target_image_size=(250, 250), batch_size=batch_size,
+                                transfer_epochs=transfer_epochs, fine_tune_epochs=fine_tune_epochs, save=True)
+        # evaluate_model(model, batch_size=batch_size)
 
 
 if __name__ == '__main__':
-    start_time = time.time()
-    model = build_dat_model("VGG16",
-                            applications.VGG16(include_top=False, weights='imagenet', input_shape=(250, 250, 3)),
-                            epochs=1,
-                            save=True)
-    evaluate_model(model)
-    print("Training complete, total runtime was {} sec".format(time.time() - start_time))
+    evaluate_available_base_models()
