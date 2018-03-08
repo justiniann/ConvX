@@ -4,8 +4,10 @@ from keras import optimizers
 from keras.layers import Dropout, Flatten, Dense
 from keras.models import Sequential, Model
 from keras.preprocessing.image import ImageDataGenerator
+from keras.models import model_from_json
+from PIL import Image
 
-from convx_utils import *
+from convx.convx_utils import *
 
 RES_PATH = "..{0}..{0}resources{0}".format(os.path.sep)
 IMG_PATH = "..{0}..{0}images{0}".format(os.path.sep)
@@ -47,8 +49,8 @@ def build_fully_connected_top_layer(connecting_shape):
     top_layers = Sequential()
     top_layers.add(Flatten(input_shape=connecting_shape))
     top_layers.add(Dense(256, activation='relu'))
-    top_layers.add(Dropout(0.5))
-    top_layers.add(Dense(1, activation='sigmoid'))
+    top_layers.add(Dropout(0.05))
+    top_layers.add(Dense(2, activation='softmax'))
     return top_layers
 
 
@@ -85,16 +87,26 @@ def do_transfer_learning(path_to_bottleneck_features, healthy_train_images, unhe
                          healthy_validation_images, unhealthy_validation_images, epochs=20, batch_size=32):
     # load training data
     train_data = np.load(open(os.path.join(path_to_bottleneck_features, "train.npy"), 'rb'))
-    train_labels = np.array([0] * healthy_train_images + [1] * unhealthy_train_images)
+    train_labels = []
+    for i in range(0, healthy_train_images):
+        train_labels.append(np.asarray([1, 0]))
+    for i in range(0, unhealthy_train_images):
+        train_labels.append(np.asarray([0, 1]))
+    train_labels = np.asarray(train_labels)
 
     # load validation data
     validation_data = np.load(open(os.path.join(path_to_bottleneck_features, "validation.npy"), 'rb'))
-    validation_labels = np.array([0] * healthy_validation_images + [1] * unhealthy_validation_images)
+    validation_labels = []
+    for i in range(0, healthy_validation_images):
+        validation_labels.append(np.asarray([1, 0]))
+    for i in range(0, unhealthy_validation_images):
+        validation_labels.append(np.asarray([0, 1]))
+    validation_labels = np.asarray(validation_labels)
 
     top_layer = build_fully_connected_top_layer(train_data.shape[1:])
 
-    top_layer.compile(loss='binary_crossentropy',
-                      optimizer=optimizers.SGD(momentum=0.95),
+    top_layer.compile(loss='hinge',
+                      optimizer="adam",
                       metrics=['accuracy'])
 
     top_layer.fit(train_data, train_labels,
@@ -105,30 +117,18 @@ def do_transfer_learning(path_to_bottleneck_features, healthy_train_images, unhe
     return top_layer
 
 
-def do_fine_tune_learning(base_model, top_layer, model_weights_save_file, num_training_steps, num_validation_steps,
+def do_fine_tune_learning(base_model, top_layer, num_training_steps, num_validation_steps,
                           layers_to_train, epochs=20, batch_size=32, target_image_size=(250, 250)):
     model_for_finetune = Model(inputs=base_model.input, outputs=top_layer(base_model.output))
 
     for layer in model_for_finetune.layers[:len(model_for_finetune.layers) - layers_to_train]:
         layer.trainable = False
 
-    model_for_finetune.compile(loss='binary_crossentropy',
-                               optimizer=optimizers.SGD(momentum=0.95),
+    model_for_finetune.compile(loss='hinge',
+                               optimizer="adam",
                                metrics=['accuracy'])
 
-    checkpointer = ModelCheckpoint(
-        model_weights_save_file,
-        monitor='val_loss',
-        save_best_only=True
-    )
-
-    train_datagen = ImageDataGenerator(
-        rescale=1. / 255,
-        shear_range=0.2,
-        zoom_range=0.2,
-        horizontal_flip=True)
-
-    test_datagen = ImageDataGenerator(rescale=1. / 255)
+    train_datagen = ImageDataGenerator(rescale=1. / 255)
 
     train_generator = train_datagen.flow_from_directory(
         TRAIN_PATH,
@@ -136,22 +136,21 @@ def do_fine_tune_learning(base_model, top_layer, model_weights_save_file, num_tr
         batch_size=batch_size,
         class_mode='binary')
 
-    validation_generator = test_datagen.flow_from_directory(
+    validation_generator = train_datagen.flow_from_directory(
         VAL_PATH,
         target_size=target_image_size,
         batch_size=batch_size,
         class_mode='binary')
 
-    # fine-tune the model
     model_for_finetune.fit_generator(
         train_generator,
         steps_per_epoch=num_training_steps,
         epochs=epochs,
         validation_data=validation_generator,
         validation_steps=num_validation_steps,
-        callbacks=[checkpointer],
         verbose=1
     )
+
     return model_for_finetune
 
 
@@ -198,14 +197,12 @@ def build_dat_model(model_name, base_model, batch_size=32, target_image_size=(25
     print("Transfer learning complete!")
 
     # ***FINETUNE LEARNING*********************************************************************************************
-    # print("Beginning Fine-Tune learning...")
-    model_save_file = os.path.join(path_to_saved_data, "checkpointer_weights.hdf5".format(model_name))
+    print("Beginning Fine-Tune learning...")
     top_layer = build_fully_connected_top_layer(base_model.output_shape[1:])
     top_layer.load_weights(top_model_weights_path)
     final_model = do_fine_tune_learning(
         base_model,
         top_layer,
-        model_save_file,
         num_training_steps,
         num_validation_steps,
         layers_to_train=10,
@@ -219,10 +216,14 @@ def build_dat_model(model_name, base_model, batch_size=32, target_image_size=(25
 
 
 def evaluate_model(model, batch_size=32, target_image_size=(250, 250)):
+    model.compile(loss='binary_crossentropy',
+                  optimizer=optimizers.SGD(momentum=0.95),
+                  metrics=['accuracy', f3_score])
+
     healthy_test_images = count_files(os.path.join(TEST_PATH, "healthy"))
     unhealthy_test_images = count_files(os.path.join(TEST_PATH, "unhealthy"))
 
-    test_iteration_count = get_iterations_per_epoch((healthy_test_images + unhealthy_test_images), batch_size)
+    test_iteration_count = int(get_iterations_per_epoch((healthy_test_images + unhealthy_test_images), batch_size))
 
     test_datagen = ImageDataGenerator(rescale=1. / 255)
 
@@ -231,31 +232,20 @@ def evaluate_model(model, batch_size=32, target_image_size=(250, 250)):
         target_size=target_image_size,
         batch_size=batch_size,
         class_mode='binary',
-        shuffle=False
+        shuffle=False,
     )
 
-    eval_generator = model.evaluate_generator(test_generator, test_iteration_count)
-    print("Accuracy: {}%".format(eval_generator[1]))
+    test_y_actual = []
+    test_y_predicted = []
+    for i in range(0, test_iteration_count):
+        data = test_generator.next()
+        test_y_actual.append(data[1])
+        preds = model.predict(data[0], batch_size=batch_size)
+        test_y_predicted.append(preds)
+        print(preds)
 
-
-def evaluate_available_base_models():
-    input_shape = (250, 250, 3)
-    batch_size = 32
-    transfer_epochs = 50
-    fine_tune_epochs = 2
-    base_models = {
-        # "VGG16": applications.VGG16(include_top=False, weights='imagenet', input_shape=input_shape),
-        # "VGG19": applications.VGG19(include_top=False, weights='imagenet', input_shape=input_shape),
-        # "Resnet50": applications.ResNet50(include_top=False, weights='imagenet', input_shape=input_shape),
-        # "Xception": applications.Xception(include_top=False, weights='imagenet', input_shape=input_shape),
-        "InceptionV3": applications.InceptionV3(include_top=False, weights='imagenet', input_shape=input_shape),
-    }
-    for model_name in base_models.keys():
-        print("Now evaluating {} model".format(model_name))
-        model = build_dat_model(model_name, base_models[model_name], target_image_size=(250, 250), batch_size=batch_size,
-                                transfer_epochs=transfer_epochs, fine_tune_epochs=fine_tune_epochs, save=True)
-        # evaluate_model(model, batch_size=batch_size)
+    test_y_actual = np.asarray(test_y_actual)
 
 
 if __name__ == '__main__':
-    evaluate_available_base_models()
+    model = build_dat_model("convx_model", applications.ResNet50(include_top=False, input_shape=(250,250,3)), batch_size=32, fine_tune_epochs=20, transfer_epochs=1)

@@ -28,7 +28,7 @@ def read_data_entry_preprocessed_csv(size=None):
     return df
 
 
-def split_that_shit(size=None, test_percentage=0.2, validation_percentage=0.1):
+def split_image_groups(size=None, test_percentage=0.2, validation_percentage=0.1):
     dataset = read_data_entry_preprocessed_csv(size=size)
     X = dataset.iloc[:, :-1].values
     y = dataset.iloc[:, 1].values
@@ -52,27 +52,27 @@ def ouptut_distribution():
 
 
 def move_images():
-    train_X, train_y, validation_X, validation_y, test_X, test_y = split_that_shit()
+    train_X, train_y, validation_X, validation_y, test_X, test_y = split_image_groups()
     # train
     for i in range(0, len(train_X)):
         file_name = train_X[i]
         classification_directory = "healthy" if np.argmax(train_y[i]) == 0 else "unhealthy"
         os.rename("{}{}".format(IMG_PATH, file_name), "{}{}{}{}"
-                  .format(train_path, classification_directory, os.path.sep, file_name))
+                  .format(TRAIN_PATH, classification_directory, os.path.sep, file_name))
 
     # validation
     for i in range(0, len(validation_X)):
         file_name = validation_X[i]
         classification_directory = "healthy" if np.argmax(validation_y[i]) == 0 else "unhealthy"
         os.rename("{}{}".format(IMG_PATH, file_name), "{}{}{}{}"
-                  .format(validation_path, classification_directory, os.path.sep, file_name))
+                  .format(VAL_PATH, classification_directory, os.path.sep, file_name))
 
     # test
     for i in range(0, len(test_X)):
         file_name = test_X[i]
         classification_directory = "healthy" if np.argmax(test_y[i]) == 0 else "unhealthy"
         os.rename("{}{}".format(IMG_PATH, file_name), "{}{}{}{}"
-                  .format(test_path, classification_directory, os.path.sep, file_name))
+                  .format(TEST_PATH, classification_directory, os.path.sep, file_name))
 
 
 def preprocess():
