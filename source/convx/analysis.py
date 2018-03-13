@@ -24,7 +24,7 @@ if __name__ == '__main__':
     target_image_size = (512, 512)
     batch_size = 32
     transfer_learning_epochs = 100
-    fine_tuning_epochs = 1
+    fine_tuning_epochs = 20
     fine_tuning_layers_to_train = 10
 
     # The following are directories used for reading/saving data
