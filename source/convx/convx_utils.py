@@ -1,11 +1,9 @@
-import pandas as pd
-import numpy as np
 import os
-from keras.preprocessing import image
-import random
+
+import numpy as np
+import pandas as pd
 from keras.utils import np_utils
 from sklearn.model_selection import train_test_split
-from multiprocessing.dummy import Pool as ThreadPool
 
 RES_PATH = "..{0}..{0}resources{0}".format(os.path.sep)
 BOTTLENECK_PATH = "..{0}..{0}bottleneck{0}".format(os.path.sep)
@@ -41,6 +39,14 @@ def get_iterations_per_epoch(total_images, batch_size):
 def format_dependent(y, categories=2):
     return np_utils.to_categorical(y, categories)
 
+def get_img_filepath(filename, y):
+    classification = "healthy" if y == 0 else "unhealthy"
+    if os.path.exists(os.path.join(TRAIN_PATH, classification, filename)):
+        return os.path.join(TRAIN_PATH, classification, filename)
+    elif os.path.exists(os.path.join(TEST_PATH, classification, filename)):
+        return os.path.join(TEST_PATH, classification, filename)
+    elif os.path.exists(os.path.join(VAL_PATH, classification, filename)):
+        return os.path.join(VAL_PATH, classification, filename)
 
 def split_image_groups(test_percentage=0.2, validation_percentage=0.1):
     dataset = read_data_entry_preprocessed_csv()
@@ -95,6 +101,18 @@ def ouptut_distribution():
     print("Total number of unhealthy images: {}".format(num_images - num_healthy_images))
 
 
+def get_image_intensity():
+    dataset = read_data_entry_csv()
+    counts = [0] * 10
+    for label in dataset['Finding Labels']:
+        if label == "No Finding":
+            counts[0] += 1
+        else:
+            num_diseases = len(label.split('|'))
+            counts[num_diseases] += 1
+    print("Disease counts: {}".format(counts))
+
 if __name__ == '__main__':
     preprocess()
     move_images()
+    get_image_intensity()

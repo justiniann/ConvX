@@ -1,16 +1,9 @@
-from keras import applications
-from keras import backend as K
-from keras import optimizers
-from keras.layers import Dropout, Flatten, Dense
-from keras.models import Sequential, Model
-from keras.preprocessing.image import ImageDataGenerator
-from keras.models import model_from_json
-from PIL import Image
-from keras.applications import VGG16, ResNet50
-from keras.preprocessing.image import ImageDataGenerator
-from keras.models import Sequential
+from keras.applications import ResNet50
 from keras.layers import *
-from keras import optimizers
+from keras.models import Model
+from keras.models import Sequential
+from keras.models import model_from_json
+from keras.preprocessing.image import ImageDataGenerator
 from keras.utils import to_categorical
 from sklearn.metrics import accuracy_score, fbeta_score, confusion_matrix
 
